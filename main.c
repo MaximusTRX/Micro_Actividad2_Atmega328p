@@ -24,9 +24,20 @@
 #define F10US		2	// GPIOR0<2>:
 #define BTNACTUAL	3	// GPIOR0<3>:
 #define BTNDOWN		4	// GPIOR0<4>:
-#define ECHOFLAG	5	// GPIOR0<5>:
-#define INIMED		6	// GPIOR0<6>:
-#define FTRIGGER	7	// GPIOR0<7>:
+//#define	5	// GPIOR0<5>:
+//#define 	6	// GPIOR0<6>:
+//#define 	7	// GPIOR0<7>:
+
+// **** GPIOR1 como regsitros de banderas ****
+//#define 	0	// GPIOR1<0>:
+//#define 	1	// GPIOR1<1>:
+//#define 	2	// GPIOR1<2>:
+//#define 	3	// GPIOR1<3>:
+#define ECHOSTATE	4	// GPIOR1<4>:	0 cuando se espera el flanco rising - 1 cuando se espera el falling
+#define ECHOFINISH	5	// GPIOR1<5>:	1 cuando la medición termina
+#define INIMED		6	// GPIOR1<6>:
+#define FTRIGGER	7	// GPIOR1<7>:
+
 
 
 // EEPROM
@@ -39,7 +50,7 @@ EEMEM uint8_t variable1;
 
 // Constantes en FLASH
 
-PROGMEM const uint8_t varFlash = 10;
+//PROGMEM const uint8_t varFlash = 10;
 
 //.
 
@@ -58,6 +69,7 @@ uint8_t		lastMedicion;		//!< Description: Guarda el valor de la resta entre los 
 //========================== Declaración Cabeceras de Funciones
 void ini_ports();
 void ini_Timer1();
+void ini_Externals();
 void do_10ms();
 void do_Medicion();
 void do_BTNCHANGE();
@@ -82,8 +94,17 @@ ISR (USART_RX_vect){
 	
 }
 
-ISR (PCINT1){
-	
+
+ISR (PCINT0_vect){
+	if (!(GPIOR1 & (1<<ECHOSTATE)))
+	{
+		tEchoUP =	TCNT1;
+		EICRA	=	(1<<ISC01);		//!< Description: Configura el flanco a detectar, falling.
+		GPIOR1	|=	(1<<ECHOSTATE);
+	}else{
+		tEchoDOWN = TCNT1;
+		GPIOR1 |= (1<<ECHOFINISH);
+	}
 }
 
 
@@ -112,6 +133,12 @@ void ini_USART0(){
 	//UBRR0L = 16; 
 }
 
+void ini_Externals(){
+	EIMSK	= (1<<INT0);			//!< Description: Habilita Interrupción general de los pines INT0
+	PCMSK0	= (1<<PCINT0);			//!< Description: Seleccióna el pin que se controla el cambio para generar la interrupt
+	PCICR	|= (1<<PCIE0);			//!< Description: Hablilita la interrupción por cambio de flanco
+}
+
 //===================================== Functions
 void do_10ms(){
 	GPIOR0 &= ~(1<<F10MS);
@@ -119,7 +146,7 @@ void do_10ms(){
 	t100ms --;
 	if(!t100ms)
 	{
-		t100ms = 10;
+		t100ms = 50;
 		GPIOR0 |= (1<<F100MS);
 	}
 	
@@ -135,11 +162,12 @@ void do_10ms(){
 }
 
 void do_Medicion(){
-	GPIOR0 &= ~(1<<INIMED);
-	GPIOR0 |= (1<<FTRIGGER);
-	GPIOR0 &= ~(1<<ECHOFLAG);
-	//TIMSK1 |= (1<<ICIE1);
-	//PORTB ^= (1<<LEDBUILDIN);
+	GPIOR1 &= ~(1<<INIMED);
+	GPIOR1	|= (1<<FTRIGGER);
+	GPIOR1	&= ~(1<<ECHOSTATE);
+	GPIOR1	&= ~(1<<ECHOFINISH);
+	//PCICR	|= (1<<PCIE0);				//!< Description: Hablilita la interrupción por cambio de flanco
+	EICRA	|= (1<<ISC01) | (1<<ISC00); //!< Description: Configura el flanco a detectar. rising = 1-1. falling = 1-0
 }
 
 void do_Transmit(){
@@ -147,7 +175,6 @@ void do_Transmit(){
 		UDR0 = lastMedicion;					//!< Description: UDR0 es el registro que se carga para mandar los datos
 		//UCSR0A &= ~(1<<UDRE0);
 	}
-	PORTB ^= (1<<LEDBUILDIN);
 }
 
 void do_BTNCHANGE(){
@@ -171,8 +198,11 @@ int main(void)
 	ini_ports();
 	ini_Timer1();
 	ini_USART0();
+	ini_Externals();
 	sei();
 	tTRIGGER = 147;
+	t100ms = 30;
+	tdebounce = 10;
 	MASKHEARBEAT = 58;
 	HSCR04_Start();
 	
@@ -184,17 +214,15 @@ int main(void)
 			tTRIGGER --;
 			if(!tTRIGGER)
 			{
-				tTRIGGER = 145;
-				GPIOR0 |= (1<<INIMED);
+				tTRIGGER = 147;
+				GPIOR1 |= (1<<INIMED);
 			}
-			if (GPIOR0 & (1<<FTRIGGER)){
+			if (GPIOR1 & (1<<FTRIGGER)){
 				if (PINB & (1<<TRIGGER)){		//!< Description: Si el trigger está en 1 pongo la flag en 0
-					GPIOR0 &= ~(1<<FTRIGGER);	//!< Description: Porque no necesito hacer toggle de nuevo
+					GPIOR1 &= ~(1<<FTRIGGER);	//!< Description: Porque no necesito hacer toggle de nuevo
 				}
-				
 				PORTB ^= (1<<TRIGGER);			//!< Description: Toggle del pin de trigger
 			}
-	
 		}
 		
 		if (GPIOR0 & (1<<F10MS)){
@@ -206,11 +234,13 @@ int main(void)
 			do_Transmit();
 		}
 		
-		if(GPIOR0 & (1<<INIMED)){
+		
+		if(GPIOR1 & (1<<INIMED)){
 			do_Medicion();
 		}
 		
 		//============================CAPTURA DE ECHO
+		/*
 		if (PINB & (1<<ECHO))
 		{
 			if (!(GPIOR0 & (1<<ECHOFLAG))){			//!< Description: Entro solamente una vez para tomar el valor de tiempo
@@ -225,6 +255,12 @@ int main(void)
 			lastMedicion = (tEchoDOWN - tEchoUP)/58;
 			GPIOR0 &= ~(1<<ECHOFLAG);
 			
+		}
+		*/
+		if (GPIOR1 & (1<<ECHOFINISH))
+		{
+			//PCICR	= 0x00;							//!< Description: Deshabilito la interrupción por cambio de flanco.
+			lastMedicion = (tEchoDOWN - tEchoUP)/58;
 		}
 		
 		//=============================CAPTURA DE BOTON
